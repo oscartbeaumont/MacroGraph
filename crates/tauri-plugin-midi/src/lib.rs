@@ -1,3 +1,5 @@
+//! A WebMIDI-compatible plugin for Tauri
+
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -7,7 +9,7 @@ use std::{
 use midir::{MidiInput, MidiOutput};
 use tauri::{
     plugin::{Builder, TauriPlugin},
-    Manager,
+    Manager, Runtime,
 };
 use tauri_specta::Event;
 
@@ -79,9 +81,7 @@ fn open_input<R: tauri::Runtime>(
             {
                 let name = name.clone();
                 move |_, msg, _| {
-                    MIDIMessage(name.to_string(), msg.to_vec())
-                        .emit_all(&app)
-                        .ok();
+                    MIDIMessage(name.to_string(), msg.to_vec()).emit(&app).ok();
                 }
             },
             (),
@@ -165,29 +165,34 @@ struct StateChange {
 #[derive(serde::Serialize, specta::Type, tauri_specta::Event, Clone)]
 struct MIDIMessage(String, Vec<u8>);
 
-macro_rules! specta_builder {
-    () => {
-        tauri_specta::ts::builder()
-            .commands(tauri_specta::collect_commands![
-                open_input::<tauri::Wry>,
-                close_input,
-                open_output,
-                close_output,
-                output_send
-            ])
-            .events(tauri_specta::collect_events![StateChange, MIDIMessage])
-    };
+fn builder<R: Runtime>() -> tauri_specta::Builder<R> {
+    tauri_specta::Builder::<R>::new()
+        .plugin_name(PLUGIN_NAME)
+        .commands(tauri_specta::collect_commands![
+            open_input::<tauri::Wry>,
+            close_input,
+            open_output,
+            close_output,
+            output_send
+        ])
+        .events(tauri_specta::collect_events![StateChange, MIDIMessage])
 }
 
-pub fn init<R: tauri::Runtime>() -> TauriPlugin<R> {
-    let plugin_utils = specta_builder!().into_plugin_utils(PLUGIN_NAME);
+/// Initialise the Tauri MIDI plugin
+///
+/// # Example
+/// ```rs
+/// // TODO
+/// ```
+pub fn init<R: Runtime>() -> TauriPlugin<R> {
+    let builder = builder::<R>();
 
     Builder::new(PLUGIN_NAME)
-        .invoke_handler(plugin_utils.invoke_handler)
-        .setup(move |app| {
+        .invoke_handler(builder.invoke_handler())
+        .setup(move |app, _| {
             app.manage(State::default());
 
-            (plugin_utils.setup)(app);
+            builder.mount_events(app);
 
             let app = app.clone();
 
@@ -208,7 +213,7 @@ pub fn init<R: tauri::Runtime>() -> TauriPlugin<R> {
                         inputs: get_inputs(&midi_in).unwrap_or_default(),
                         outputs: get_outputs(&midi_out).unwrap_or_default(),
                     }
-                    .emit_all(&app)
+                    .emit(&app)
                     .ok();
 
                     std::thread::sleep(Duration::from_millis(1000));
@@ -226,10 +231,11 @@ mod test {
 
     #[test]
     fn export_types() {
-        specta_builder!()
-            .path("./guest-js/bindings.ts")
-            .config(specta::ts::ExportConfig::default().formatter(specta::ts::formatter::prettier))
-            .export_for_plugin(PLUGIN_NAME)
-            .ok();
+        builder::<tauri::Wry>()
+            .export(
+                specta_typescript::Typescript::default(),
+                "./guest-js/bindings.ts",
+            )
+            .unwrap();
     }
 }
